@@ -1,0 +1,42 @@
+# Create the helper through Settings -> Devices & services -> Helpers, or merge
+# this entry into an existing top-level `input_text:` section. The automation sets
+# it only when this workflow actually sends a playback command, so removing an
+# unknown cartridge cannot stop unrelated Plex playback.
+input_text:
+  plex_cartridge_active_uid:
+    name: Plex cartridge active UID
+    max: 32
+
+# Merge these entries into the existing top-level `shell_command:` section in
+# /config/configuration.yaml. Do not add a second `shell_command:` key.
+#
+# Home Assistant runs these inside its own container, where the official Plex
+# integration's bundled `plexapi` package and /config directory are available.
+# The helper reads the existing Plex integration token privately from .storage;
+# never place a token in this file or in cartridge_config.json.
+shell_command:
+  # Production actions used by automation.example.yaml.
+  plex_cartridge_play: >-
+    python3 /config/cartridge_player/plex_native_player.py play --uid "{{ uid }}" --request-id "{{ request_id | default(0, true) }}" --method legacy
+
+  plex_cartridge_stop_native: >-
+    python3 /config/cartridge_player/plex_native_player.py stop --request-id "{{ request_id | default(0, true) }}"
+
+  # Called only by the full Home Assistant startup trigger, after prior shell
+  # children have exited. Do not run it manually while play/stop is in progress.
+  plex_cartridge_reset_arbitration: >-
+    python3 /config/cartridge_player/plex_native_player.py reset-arbitration
+
+  # Read-only discovery actions. Their response contains stdout, stderr, and a
+  # return code. Use the examples in README.md to view the sanitized JSON output.
+  plex_cartridge_list_servers: >-
+    python3 /config/cartridge_player/plex_native_player.py list-servers
+
+  plex_cartridge_inspect_media: >-
+    python3 /config/cartridge_player/plex_native_player.py inspect --uid "{{ uid }}"
+
+  plex_cartridge_inspect_player: >-
+    python3 /config/cartridge_player/plex_native_player.py inspect-player --base-url "{{ base_url }}"
+
+  plex_cartridge_dry_run: >-
+    python3 /config/cartridge_player/plex_native_player.py play --uid "{{ uid }}" --dry-run

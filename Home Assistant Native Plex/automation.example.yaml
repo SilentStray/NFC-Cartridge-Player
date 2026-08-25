@@ -1,0 +1,408 @@
+# Reference automation for one NFC cartridge and one native Plex Android TV
+# player. Replace every example entity/source/title/UID before importing it.
+#
+# The persistent presence state is deliberately used instead of relying only on
+# the transient esphome.nfc_card_inserted event. Omitting `from` on the insert
+# trigger also catches unavailable -> on after the reader reboots with a tag in it.
+
+id: nfc_cartridge_native_plex_example
+alias: Cartridge Player - Native Plex example
+description: >-
+  Starts the PlexServer movie associated with one NFC UID in the native Plex
+  Android TV app. A cold TV start selects the receiver input; an already-on TV
+  keeps its current input. Playback begins at offset zero. Removing the cartridge
+  stops Plex through three independent local paths. Google Cast is not used.
+
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.your_cartridge_player_cartridge_present
+    to: "on"
+    for: "00:00:01"
+    id: cartridge_inserted
+    alias: Cartridge detected after insertion or reader reconnect
+
+  # The ESPHome examples clear the UID before publishing presence = off. Triggering
+  # only when the exact mapped UID is departed means removing an unknown tag cannot
+  # authorize a stop, even if the persistent active helper were stale.
+  - trigger: state
+    entity_id: sensor.your_cartridge_player_cartridge_id
+    from: "04-AA-BB-CC-DD-EE-FF"
+    id: cartridge_removed
+    alias: Exact mapped cartridge removed or reader lost
+
+  - trigger: homeassistant
+    event: start
+    id: home_assistant_started
+    alias: Reconcile the active UID after Home Assistant starts
+
+conditions: []
+
+actions:
+  - variables:
+      # Keep these synchronized with cartridge_config.json.
+      expected_uid: "04-AA-BB-CC-DD-EE-FF"
+      expected_title_lower: "example movie"
+      # Ordered in microseconds so a removal run can cancel an older shell-command
+      # child even if Home Assistant already stopped waiting for that process.
+      request_id: "{{ (as_timestamp(now()) * 1000000) | int }}"
+
+  # In restart mode a removal interrupts startup or the wait-for-removal step.
+  # Stop only when this automation recorded the mapped UID as active; removing an
+  # unknown cartridge must not stop unrelated Plex playback.
+  - if:
+      - condition: trigger
+        id: cartridge_removed
+    then:
+      - if:
+          - condition: template
+            value_template: >-
+              {{ (states('input_text.plex_cartridge_active_uid') | upper) ==
+              (expected_uid | upper) }}
+        then:
+          - action: shell_command.plex_cartridge_stop_native
+            data:
+              request_id: "{{ request_id }}"
+            continue_on_error: true
+          - action: media_player.media_stop
+            target:
+              entity_id: media_player.your_native_plex_player
+            continue_on_error: true
+          - action: remote.send_command
+            target:
+              entity_id: remote.your_android_tv
+            data:
+              command: MEDIA_STOP
+            continue_on_error: true
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.plex_cartridge_active_uid
+            data:
+              value: ""
+          - stop: Active mapped cartridge removal handled
+        else:
+          - stop: Ignored removal because no mapped cartridge playback was active
+    alias: Stop only playback started by this cartridge workflow
+
+  # input_text restores its value across a Home Assistant restart. Reconcile it
+  # before normal processing so a tag removed while HA was offline cannot leave a
+  # stale ownership marker. If the mapped tag is still present, continue through
+  # the normal launch path; otherwise clear the marker and stop this run.
+  - if:
+      - condition: trigger
+        id: home_assistant_started
+    then:
+      # A full HA process startup is a safe boundary: prior shell-command children
+      # have exited. Reset persisted wall-clock ordering in case system time moved.
+      - action: shell_command.plex_cartridge_reset_arbitration
+        alias: Reset native play/stop ordering after Home Assistant starts
+      - wait_template: >-
+          {{ is_state('binary_sensor.your_cartridge_player_cartridge_present',
+          'off') or (is_state(
+          'binary_sensor.your_cartridge_player_cartridge_present', 'on') and
+          states('sensor.your_cartridge_player_cartridge_id') not in
+          ['', 'unknown', 'unavailable']) }}
+        timeout: "00:01:00"
+        continue_on_timeout: true
+        alias: Wait for the cartridge reader state after Home Assistant starts
+      - if:
+          - condition: template
+            value_template: >-
+              {{ not (is_state(
+              'binary_sensor.your_cartridge_player_cartridge_present', 'on') and
+              (states('sensor.your_cartridge_player_cartridge_id') | upper) ==
+              (expected_uid | upper)) }}
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.plex_cartridge_active_uid
+            data:
+              value: ""
+          - stop: Cleared stale active UID; mapped cartridge is not present
+    alias: Reconcile the persistent active UID at Home Assistant startup
+
+  # Presence can reach Home Assistant just before the UID after an ESPHome
+  # reconnect. Wait briefly, then fail closed if this is not the mapped cartridge.
+  - wait_template: >-
+      {{ (states('sensor.your_cartridge_player_cartridge_id') | upper) ==
+      (expected_uid | upper) or not
+      is_state('binary_sensor.your_cartridge_player_cartridge_present', 'on') }}
+    timeout: "00:00:05"
+    continue_on_timeout: true
+    alias: Wait for the mapped NFC UID
+
+  - if:
+      - condition: template
+        value_template: >-
+          {{ not (is_state(
+          'binary_sensor.your_cartridge_player_cartridge_present', 'on') and
+          (states('sensor.your_cartridge_player_cartridge_id') | upper) ==
+          (expected_uid | upper)) }}
+    then:
+      - if:
+          - condition: template
+            value_template: >-
+              {{ trigger.from_state is defined and
+              (trigger.from_state.state | default('', true) | upper) ==
+              (expected_uid | upper) and
+              (states('input_text.plex_cartridge_active_uid') | upper) ==
+              (expected_uid | upper) }}
+        then:
+          - action: shell_command.plex_cartridge_stop_native
+            data:
+              request_id: "{{ request_id }}"
+            continue_on_error: true
+          - action: media_player.media_stop
+            target:
+              entity_id: media_player.your_native_plex_player
+            continue_on_error: true
+          - action: remote.send_command
+            target:
+              entity_id: remote.your_android_tv
+            data:
+              command: MEDIA_STOP
+            continue_on_error: true
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.plex_cartridge_active_uid
+        data:
+          value: ""
+      - stop: Ignored an unmapped or removed cartridge
+    alias: Fail closed unless the mapped cartridge is still present
+
+  # OPTIONAL TV BLOCK: replace the entity/source, or delete this entire block.
+  # It changes the TV input only during a cold start.
+  - if:
+      - condition: state
+        entity_id: media_player.your_tv
+        state: "off"
+    then:
+      - action: media_player.turn_on
+        target:
+          entity_id: media_player.your_tv
+      - wait_template: "{{ not is_state('media_player.your_tv', 'off') }}"
+        timeout: "00:00:30"
+        continue_on_timeout: true
+      - action: media_player.select_source
+        target:
+          entity_id: media_player.your_tv
+        data:
+          source: "YOUR_TV_RECEIVER_SOURCE"
+    alias: Wake an off TV and select its receiver input
+
+  # OPTIONAL RECEIVER BLOCK: replace both values, or delete these two actions.
+  - action: media_player.turn_on
+    target:
+      entity_id: media_player.your_receiver
+    alias: Turn on the AV receiver
+
+  - action: media_player.select_source
+    target:
+      entity_id: media_player.your_receiver
+    data:
+      source: "YOUR_RECEIVER_PLAYER_SOURCE"
+    alias: Select the Android TV player on the receiver
+
+  - action: remote.turn_on
+    target:
+      entity_id: remote.your_android_tv
+    data:
+      activity: plex://
+    alias: Wake Android TV and request native Plex
+
+  # Cold starts vary. Wait for actual Android TV state instead of guessing with a
+  # long fixed delay, then request Plex again after the remote becomes available.
+  - wait_template: "{{ is_state('remote.your_android_tv', 'on') }}"
+    timeout: "00:01:00"
+    continue_on_timeout: false
+    alias: Wait for the Android TV remote
+
+  - action: remote.turn_on
+    target:
+      entity_id: remote.your_android_tv
+    data:
+      activity: plex://
+    alias: Launch Plex after Android TV is online
+
+  - wait_template: >-
+      {{ is_state_attr('remote.your_android_tv', 'current_activity',
+      'com.plexapp.android') or not
+      is_state('binary_sensor.your_cartridge_player_cartridge_present', 'on') }}
+    timeout: "00:00:30"
+    continue_on_timeout: false
+    alias: Wait for native Plex to reach the foreground
+
+  - delay: "00:00:03"
+    alias: Allow Plex Companion to initialize
+
+  - if:
+      - condition: template
+        value_template: >-
+          {{ not is_state(
+          'binary_sensor.your_cartridge_player_cartridge_present', 'on') }}
+    then:
+      - stop: Cartridge was removed before Plex became ready
+    alias: Abort if the cartridge was removed during startup
+
+  # Set the active marker immediately before sending playback. A removal after
+  # this point takes the stop path; a removal earlier simply cancels startup.
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.plex_cartridge_active_uid
+    data:
+      value: "{{ states('sensor.your_cartridge_player_cartridge_id') }}"
+    alias: Record the mapped cartridge as active
+
+  - action: shell_command.plex_cartridge_play
+    data:
+      uid: "{{ states('sensor.your_cartridge_player_cartridge_id') }}"
+      request_id: "{{ request_id }}"
+    response_variable: plex_play_response
+    continue_on_error: true
+    alias: Play the UID-mapped Plex movie from the beginning
+
+  - if:
+      - condition: template
+        value_template: >-
+          {% set response = plex_play_response | default({}, true) %}
+          {{ response.get('returncode', 1) | int != 0 }}
+    then:
+      # The native command may have reached the player before a later status check
+      # failed, so use every stop path before clearing the ownership marker.
+      - action: shell_command.plex_cartridge_stop_native
+        data:
+          request_id: "{{ request_id }}"
+        continue_on_error: true
+      - action: media_player.media_stop
+        target:
+          entity_id: media_player.your_native_plex_player
+        continue_on_error: true
+      - action: remote.send_command
+        target:
+          entity_id: remote.your_android_tv
+        data:
+          command: MEDIA_STOP
+        continue_on_error: true
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.plex_cartridge_active_uid
+        data:
+          value: ""
+      - stop: Native Plex helper rejected the playback request
+    alias: Stop safely and clear the marker if the playback command failed
+
+  # The Plex integration's per-server scan button is preferred over the legacy
+  # plex.scan_for_clients action. A player entity can be unavailable while idle.
+  - action: button.press
+    target:
+      entity_id: button.your_plex_server_scan_clients
+    continue_on_error: true
+    alias: Refresh native Plex clients
+
+  - wait_template: >-
+      {{ (is_state('media_player.your_native_plex_player', 'playing') and
+      (state_attr('media_player.your_native_plex_player', 'media_title') |
+      default('', true) | trim | lower) == expected_title_lower) or not
+      is_state('binary_sensor.your_cartridge_player_cartridge_present', 'on') }}
+    timeout: "00:01:00"
+    continue_on_timeout: true
+    alias: Confirm the expected movie is playing
+
+  - if:
+      - condition: template
+        value_template: >-
+          {{ not (is_state('media_player.your_native_plex_player', 'playing')
+          and (state_attr('media_player.your_native_plex_player', 'media_title') |
+          default('', true) | trim | lower) == expected_title_lower) }}
+    then:
+      - action: shell_command.plex_cartridge_stop_native
+        data:
+          request_id: "{{ request_id }}"
+        continue_on_error: true
+      - action: media_player.media_stop
+        target:
+          entity_id: media_player.your_native_plex_player
+        continue_on_error: true
+      - action: remote.send_command
+        target:
+          entity_id: remote.your_android_tv
+        data:
+          command: MEDIA_STOP
+        continue_on_error: true
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.plex_cartridge_active_uid
+        data:
+          value: ""
+      - stop: Expected Plex playback was not confirmed
+    alias: Stop and clear the marker if playback confirmation fails
+
+  - if:
+      - condition: template
+        value_template: >-
+          {{ not is_state(
+          'binary_sensor.your_cartridge_player_cartridge_present', 'on') }}
+    then:
+      - action: shell_command.plex_cartridge_stop_native
+        data:
+          request_id: "{{ request_id }}"
+        continue_on_error: true
+      - action: media_player.media_stop
+        target:
+          entity_id: media_player.your_native_plex_player
+        continue_on_error: true
+      - action: remote.send_command
+        target:
+          entity_id: remote.your_android_tv
+        data:
+          command: MEDIA_STOP
+        continue_on_error: true
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.plex_cartridge_active_uid
+        data:
+          value: ""
+      - stop: Cartridge was removed before playback confirmation
+    alias: Stop if removal occurred during playback startup
+
+  # OPTIONAL: replace this entity, or delete the action if no buzzer is installed.
+  - action: button.press
+    target:
+      entity_id: button.your_cartridge_player_beep
+    continue_on_error: true
+    alias: Beep only after confirmed playback
+
+  - wait_template: >-
+      {{ not is_state('binary_sensor.your_cartridge_player_cartridge_present',
+      'on') }}
+    alias: Wait for cartridge removal
+
+  - action: shell_command.plex_cartridge_stop_native
+    data:
+      request_id: "{{ request_id }}"
+    continue_on_error: true
+    alias: Stop through native Plex Companion
+
+  - action: media_player.media_stop
+    target:
+      entity_id: media_player.your_native_plex_player
+    continue_on_error: true
+    alias: Stop through the Home Assistant Plex entity
+
+  - action: remote.send_command
+    target:
+      entity_id: remote.your_android_tv
+    data:
+      command: MEDIA_STOP
+    continue_on_error: true
+    alias: Stop through the Android TV remote fallback
+
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.plex_cartridge_active_uid
+    data:
+      value: ""
+    alias: Clear the active cartridge marker
+
+# Required for removal handling and reader power-cycle recovery.
+mode: restart
+max_exceeded: silent

@@ -1,0 +1,24 @@
+{
+  "_comment": "Example only. Copy to cartridge_config.json, replace every example value, and never commit the completed file.",
+  "plex_server": {
+    "name": "PlexServer",
+    "machine_identifier": "YOUR_PLEX_SERVER_MACHINE_IDENTIFIER"
+  },
+  "player": {
+    "base_url": "http://192.0.2.10:32500",
+    "client_identifier": "YOUR_PLEX_CLIENT_IDENTIFIER"
+  },
+  "cartridges": {
+    "04-AA-BB-CC-DD-EE-FF": {
+      "library": "Movies",
+      "title": "Example Movie",
+      "year": 2000,
+      "rating_key": "YOUR_PLEX_RATING_KEY",
+      "media_index": 0,
+      "media_id": "YOUR_PLEX_MEDIA_ID",
+      "part_id": "YOUR_PLEX_PART_ID",
+      "file_basename": "Example Movie (2000) - 1080p.mkv",
+      "duration_ms": 6000000
+    }
+  }
+}

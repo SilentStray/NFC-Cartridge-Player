@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+
+# Home Assistant contains credentials and private installation data.
+.storage/
+secrets.yaml
+*.db
+*.db-*
+*.log
+*.bak
+*.zip
+*.tar
+.env
+.env.*
+
+# Copy the example and keep the completed UID/media mapping private.
+Home Assistant Native Plex/cartridge_config.json
+Home Assistant Native Plex/.plex_native_player.lock
+Home Assistant Native Plex/.plex_native_player_state.json
+Home Assistant Native Plex/.plex_native_player_state.json.*.tmp
